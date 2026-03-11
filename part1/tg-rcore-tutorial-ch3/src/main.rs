@@ -64,7 +64,7 @@ const APP_CAPACITY: usize = 32;
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 unsafe extern "C" fn _start() -> ! {
-    const STACK_SIZE: usize = (APP_CAPACITY + 2) * 8192;
+    const STACK_SIZE: usize = (APP_CAPACITY + 2) * 10192;
     #[unsafe(link_section = ".boot.stack")]
     static mut STACK: [u8; STACK_SIZE] = [0u8; STACK_SIZE];
 
@@ -210,7 +210,11 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 /// 各依赖库所需接口的具体实现
 mod impls {
+    use core::ptr;
+
     use tg_syscall::*;
+
+    // use crate::task::TaskControlBlock;
 
     /// 控制台实现：通过 SBI 逐字符输出
     pub struct Console;
@@ -273,12 +277,7 @@ mod impls {
     /// QEMU virt 平台的时钟频率为 12.5 MHz（10000/125 = 80 ns/tick）。
     impl Clock for SyscallContext {
         #[inline]
-        fn clock_gettime(
-            &self,
-            _caller: Caller,
-            clock_id: ClockId,
-            tp: usize,
-        ) -> isize {
+        fn clock_gettime(&self, _caller: Caller, clock_id: ClockId, tp: usize) -> isize {
             match clock_id {
                 ClockId::CLOCK_MONOTONIC => {
                     // 将 RISC-V time 寄存器的值转换为纳秒
@@ -303,15 +302,25 @@ mod impls {
     /// - 查询系统调用计数（trace_request=2）
     impl Trace for SyscallContext {
         #[inline]
-        fn trace(
-            &self,
-            _caller: Caller,
-            _trace_request: usize,
-            _id: usize,
-            _data: usize,
-        ) -> isize {
-            tg_console::log::info!("trace: not implemented");
-            -1
+        fn trace(&self, caller: Caller, trace_request: usize, id: usize, data: usize) -> isize {
+            match trace_request {
+                0 => unsafe { (id as *const u8).read_volatile().into() },
+                1 => unsafe {
+                    ptr::write_volatile(id as *mut u8, data as u8);
+                    0
+                },
+                2 => {
+                    use super::TaskControlBlock;
+                    let tcb = caller.entity as *const TaskControlBlock;
+                    let tcb_ref = unsafe { tcb.as_ref() };
+                    match tcb_ref {
+                        Some(r) => r.syscall_count[id] as isize,
+                        None => -1,
+                    }
+                }
+                _ => -1,
+            }
+            // tg_console::log::info!("trace: not implemented");
         }
     }
 }

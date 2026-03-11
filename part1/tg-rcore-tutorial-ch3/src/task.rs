@@ -32,6 +32,9 @@ pub struct TaskControlBlock {
     /// 用户栈：8 KiB（1024 个 usize = 1024 × 8 = 8192 字节）
     /// 每个任务拥有独立的栈空间，避免栈溢出影响其他任务
     stack: [usize; 1024],
+
+    /// syscall count
+    pub syscall_count: [u32; 500],
 }
 
 /// 调度事件
@@ -55,6 +58,7 @@ impl TaskControlBlock {
         ctx: LocalContext::empty(),
         finish: false,
         stack: [0; 1024],
+        syscall_count: [0; 500],
     };
 
     /// 初始化一个任务
@@ -84,11 +88,11 @@ impl TaskControlBlock {
     /// 从用户上下文中提取系统调用 ID（a7 寄存器）和参数（a0-a5 寄存器），
     /// 分发到对应的处理函数，并将返回值写回 a0 寄存器。
     pub fn handle_syscall(&mut self) -> SchedulingEvent {
-        use tg_syscall::{SyscallId as Id, SyscallResult as Ret};
         use SchedulingEvent as Event;
+        use tg_syscall::{SyscallId as Id, SyscallResult as Ret};
 
         // a7 寄存器存放 syscall ID
-        let id = self.ctx.a(7).into();
+        let id: Id = self.ctx.a(7).into();
         // a0-a5 寄存器存放系统调用参数
         let args = [
             self.ctx.a(0),
@@ -98,7 +102,19 @@ impl TaskControlBlock {
             self.ctx.a(4),
             self.ctx.a(5),
         ];
-        match tg_syscall::handle(Caller { entity: 0, flow: 0 }, id, args) {
+
+        self.syscall_count[id.0] += 1;
+
+        let entity = (self as *const TaskControlBlock).addr();
+        // let entity = 0;
+        match tg_syscall::handle(
+            Caller {
+                entity: entity,
+                flow: 0,
+            },
+            id,
+            args,
+        ) {
             Ret::Done(ret) => match id {
                 // exit 系统调用：返回退出事件
                 Id::EXIT => Event::Exit(self.ctx.a(0)),
