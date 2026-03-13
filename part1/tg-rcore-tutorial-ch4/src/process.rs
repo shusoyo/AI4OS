@@ -19,19 +19,23 @@
 //! - 再看 `change_program_brk`：理解 sbrk 对页映射范围的影响；
 //! - 最后结合 `ch4/src/main.rs`：对齐“进程对象创建”和“调度执行”两条路径。
 
-use crate::{build_flags, parse_flags, Sv39, Sv39Manager};
-use alloc::alloc::alloc_zeroed;
+use crate::{Sv39, Sv39Manager, build_flags, parse_flags};
+use alloc::{alloc::alloc_zeroed, vec, vec::Vec};
+
 use core::alloc::Layout;
 use tg_console::log;
-use tg_kernel_context::{foreign::ForeignContext, LocalContext};
+use tg_kernel_context::{LocalContext, foreign::ForeignContext};
 use tg_kernel_vm::{
-    page_table::{MmuMeta, VAddr, PPN, VPN},
     AddressSpace,
+    page_table::{MmuMeta, PPN, VAddr, VPN},
 };
 use xmas_elf::{
+    ElfFile,
     header::{self, HeaderPt2, Machine},
-    program, ElfFile,
+    program,
 };
+
+const MAX_SYSCALL_NUM: usize = 500;
 
 /// 进程结构体
 ///
@@ -49,6 +53,8 @@ pub struct Process {
     pub heap_bottom: usize,
     /// 当前程序 break 位置（堆顶）
     pub program_brk: usize,
+    /// syscall count
+    pub syscall_count: Vec<usize>,
 }
 
 impl Process {
@@ -150,6 +156,7 @@ impl Process {
             address_space,
             heap_bottom,
             program_brk: heap_bottom,
+            syscall_count: vec![0; MAX_SYSCALL_NUM],
         })
     }
 
