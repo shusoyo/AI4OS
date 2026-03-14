@@ -1,19 +1,24 @@
 [package]
 name = "tg-rcore-tutorial-ch3"
-description = "Chapter 3 of rCore Tutorial: Multiprogramming and time-sharing multitasking."
-version = "0.4.6"
+description = "Implementation of Chapter 3 of rCore Tutorial: Multiprogramming and time-sharing multitasking."
+version = "0.1.0-preview.1" # 必须符合 0.X.Y-preview.Z 格式
 edition = "2024"
-authors = ["YdrMaster <ydrml@hotmail.com>","Yifan Wang<w-yf22@mails.tsinghua.edu.cn>","Yu Chen <yuchen@tsinghua.edu.cn>"]
-repository = "https://github.com/rcore-os/tg-rcore-tutorial-ch3"
-homepage = "https://github.com/rcore-os/tg-rcore-tutorial-ch3/tree/test"
+authors = [
+  "YdrMaster <ydrml@hotmail.com>",
+  "Yifan Wang<w-yf22@mails.tsinghua.edu.cn>",
+  "Yu Chen <yuchen@tsinghua.edu.cn>",
+  "Shuang Su <suspen@qq.com>",
+]
+repository = "https://github.com/shusoyo/AI4OS"
 documentation = "https://docs.rs/tg-rcore-tutorial-ch3"
 license = "GPL-3.0"
 readme = "README.md"
-keywords = ["rcore", "tutorial", "no-std", "riscv", "multitasking"]
+keywords = ["ai", "ai4ose", "kernel", "learning", "os"]
 categories = ["no-std", "embedded"]
 exclude = [
-    "tg-user/**",
-#    ".cargo/config.toml",
+  "tg-user/**",
+  "tg-rcore-tutorial-user",
+  #    ".cargo/config.toml",
 ]
 
 [features]
@@ -29,11 +34,15 @@ panic = "abort"
 [dependencies]
 riscv = "0.10.1"
 
-tg-sbi = { package = "tg-rcore-tutorial-sbi", path = "../tg-rcore-tutorial-sbi", version = "0.4.5", features = ["nobios"] }
+tg-sbi = { package = "tg-rcore-tutorial-sbi", path = "../tg-rcore-tutorial-sbi", version = "0.4.5", features = [
+  "nobios",
+] }
 tg-linker = { package = "tg-rcore-tutorial-linker", path = "../tg-rcore-tutorial-linker", version = "0.4.5" }
 tg-console = { package = "tg-rcore-tutorial-console", path = "../tg-rcore-tutorial-console", version = "0.4.5" }
 tg-kernel-context = { package = "tg-rcore-tutorial-kernel-context", path = "../tg-rcore-tutorial-kernel-context", version = "0.4.5" }
-tg-syscall = { package = "tg-rcore-tutorial-syscall", path = "../tg-rcore-tutorial-syscall", version = "0.4.5", features = ["kernel"] }
+tg-syscall = { package = "tg-rcore-tutorial-syscall", path = "../tg-rcore-tutorial-syscall", version = "0.4.5", features = [
+  "kernel",
+] }
 
 [build-dependencies]
 tg-linker = { package = "tg-rcore-tutorial-linker", path = "../tg-rcore-tutorial-linker", version = "0.4.5" }
