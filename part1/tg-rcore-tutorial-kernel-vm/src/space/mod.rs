@@ -7,7 +7,7 @@ use crate::PageManager;
 use alloc::vec::Vec;
 use core::{fmt, ops::Range, ptr::NonNull};
 use mapper::Mapper;
-use page_table::{PageTable, PageTableFormatter, Pos, VAddr, VmFlags, VmMeta, PPN, VPN};
+use page_table::{PPN, PageTable, PageTableFormatter, Pos, VAddr, VPN, VmFlags, VmMeta};
 use visitor::Visitor;
 
 /// 地址空间。
@@ -39,6 +39,14 @@ impl<Meta: VmMeta, M: PageManager<Meta>> AddressSpace<Meta, M> {
         // SAFETY: page_manager.root_ptr() 返回的是有效的根页表指针，
         // 由 PageManager::new_root() 创建时保证其有效性
         unsafe { PageTable::from_root(self.page_manager.root_ptr()) }
+    }
+
+    /// check wether have mapped of the given vpn range in page table
+    pub fn have_mapped(&self, range: &Range<VPN<Meta>>) -> bool {
+        !(self
+            .areas
+            .iter()
+            .all(|area| range.end <= area.start || range.start >= area.end))
     }
 
     /// 向地址空间增加映射关系。
@@ -78,6 +86,23 @@ impl<Meta: VmMeta, M: PageManager<Meta>> AddressSpace<Meta, M> {
             ptr = ptr.add(offset);
             slice(ptr, data.len()).copy_from_slice(data);
             ptr = ptr.add(data.len());
+            slice(ptr, page.as_ptr().add(size).offset_from(ptr) as _).fill(0);
+        }
+        self.map_extern(range, self.page_manager.v_to_p(page), flags)
+    }
+
+    /// 分配新的空物理页。
+    pub fn map_anonymous(&mut self, range: Range<VPN<Meta>>, mut flags: VmFlags<Meta>) {
+        // map 的语义是“分配新物理页 + 建立映射”。
+        let count = range.end.val() - range.start.val();
+        let size = count << Meta::PAGE_BITS;
+        let page = self.page_manager.allocate(count, &mut flags);
+
+        // SAFETY: page 是刚分配的有效内存，大小为 size 字节。
+        // 我们填充：[0, size) 清零
+        unsafe {
+            use core::slice::from_raw_parts_mut as slice;
+            let ptr = page.as_ptr();
             slice(ptr, page.as_ptr().add(size).offset_from(ptr) as _).fill(0);
         }
         self.map_extern(range, self.page_manager.v_to_p(page), flags)

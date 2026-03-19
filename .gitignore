@@ -5,6 +5,8 @@ target/
 **/*.bin
 **/*.elf
 
+**/tg-rcore-tutorial-user
+
 # IDE and editor files
 .idea/
 .vscode/
