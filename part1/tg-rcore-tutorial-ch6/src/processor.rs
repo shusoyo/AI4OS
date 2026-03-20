@@ -8,8 +8,8 @@
 //! - 先看 `Processor`：理解为何用 `UnsafeCell` 承载全局可变状态；
 //! - 再看 `ProcManager`：把握“实体管理(Manage) + 调度队列(Schedule)”分层。
 
-use crate::process::Process;
-use alloc::collections::{BTreeMap, VecDeque};
+use crate::process::{Process, Stride};
+use alloc::collections::{BTreeMap, BinaryHeap};
 use core::cell::UnsafeCell;
 use tg_task_manage::{Manage, PManager, ProcId, Schedule};
 
@@ -43,7 +43,23 @@ pub struct ProcManager {
     /// 所有进程实体的映射表
     tasks: BTreeMap<ProcId, Process>,
     /// 就绪队列
-    ready_queue: VecDeque<ProcId>,
+    ready_queue: BinaryHeap<StridePair>,
+}
+#[derive(Debug, Eq, PartialEq)]
+struct StridePair(ProcId, Stride);
+
+use core::cmp::Ordering;
+
+impl Ord for StridePair {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.1.stride.cmp(&self.1.stride)
+    }
+}
+
+impl PartialOrd for StridePair {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl ProcManager {
@@ -51,7 +67,7 @@ impl ProcManager {
     pub fn new() -> Self {
         Self {
             tasks: BTreeMap::new(),
-            ready_queue: VecDeque::new(),
+            ready_queue: BinaryHeap::new(),
         }
     }
 }
@@ -75,12 +91,18 @@ impl Manage<Process, ProcId> for ProcManager {
 }
 
 impl Schedule<ProcId> for ProcManager {
-    /// 加入就绪队列尾部
+    /// 将进程加入就绪队列尾部
     fn add(&mut self, id: ProcId) {
-        self.ready_queue.push_back(id);
+        let stride = &self.tasks.get(&id).unwrap().stride;
+        self.ready_queue.push(StridePair(id, stride.clone()));
     }
-    /// 从就绪队列头部取出
+
+    /// 从就绪队列头部取出下一个要执行的进程
     fn fetch(&mut self) -> Option<ProcId> {
-        self.ready_queue.pop_front()
+        self.ready_queue.pop().map(|x| {
+            let StridePair(id, _) = x;
+            self.tasks.get_mut(&id).unwrap().stride.update();
+            x.0
+        })
     }
 }

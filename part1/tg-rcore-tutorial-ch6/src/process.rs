@@ -18,20 +18,21 @@
 //! - 再看 `fork`：观察地址空间和文件描述符的继承规则；
 //! - 最后看 `change_program_brk`：理解用户堆扩缩时的页映射变化。
 
-use crate::{build_flags, map_portal, parse_flags, Sv39, Sv39Manager};
+use crate::{Sv39, Sv39Manager, build_flags, map_portal, parse_flags};
 use alloc::{alloc::alloc_zeroed, vec::Vec};
 use core::alloc::Layout;
 use spin::Mutex;
 use tg_easy_fs::FileHandle;
-use tg_kernel_context::{foreign::ForeignContext, LocalContext};
+use tg_kernel_context::{LocalContext, foreign::ForeignContext};
 use tg_kernel_vm::{
-    page_table::{MmuMeta, VAddr, PPN, VPN},
     AddressSpace,
+    page_table::{MmuMeta, PPN, VAddr, VPN},
 };
 use tg_task_manage::ProcId;
 use xmas_elf::{
+    ElfFile,
     header::{self, HeaderPt2, Machine},
-    program, ElfFile,
+    program,
 };
 
 /// 进程结构体
@@ -56,6 +57,32 @@ pub struct Process {
     pub heap_bottom: usize,
     /// 当前程序 break 位置（堆顶）
     pub program_brk: usize,
+    /// stride
+    pub stride: Stride,
+}
+const BIGSTRIDE: usize = 200;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Stride {
+    pub priority: usize,
+    pub stride: usize,
+}
+
+impl Stride {
+    pub fn new() -> Self {
+        Self {
+            priority: 16,
+            stride: 0,
+        }
+    }
+
+    pub fn get_pass(&self) -> usize {
+        BIGSTRIDE / self.priority
+    }
+
+    pub fn update(&mut self) {
+        self.stride += self.get_pass();
+    }
 }
 
 impl Process {
@@ -100,6 +127,7 @@ impl Process {
             fd_table: new_fd_table,
             heap_bottom: self.heap_bottom,
             program_brk: self.program_brk,
+            stride: Stride::new(),
         })
     }
 
@@ -187,12 +215,13 @@ impl Process {
             address_space,
             // 初始化文件描述符表：预留 stdin(0)、stdout(1)、stderr(2)
             fd_table: vec![
-                Some(Mutex::new(FileHandle::empty(true, false))),  // fd 0: stdin（可读）
-                Some(Mutex::new(FileHandle::empty(false, true))),  // fd 1: stdout（可写）
-                Some(Mutex::new(FileHandle::empty(false, true))),  // fd 2: stderr（可写）
+                Some(Mutex::new(FileHandle::empty(true, false))), // fd 0: stdin（可读）
+                Some(Mutex::new(FileHandle::empty(false, true))), // fd 1: stdout（可写）
+                Some(Mutex::new(FileHandle::empty(false, true))), // fd 2: stderr（可写）
             ],
             heap_bottom,
             program_brk: heap_bottom,
+            stride: Stride::new(),
         })
     }
 

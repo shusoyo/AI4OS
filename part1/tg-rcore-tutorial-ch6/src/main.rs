@@ -52,7 +52,7 @@ extern crate tg_console;
 extern crate alloc;
 
 use crate::{
-    fs::{read_all, FS},
+    fs::{FS, read_all},
     impls::{Console, Sv39Manager, SyscallContext},
     process::Process,
     processor::ProcManager,
@@ -69,8 +69,8 @@ use tg_kernel_context::foreign::MultislotPortal;
 #[cfg(target_arch = "riscv64")]
 use tg_kernel_vm::page_table::Sv39;
 use tg_kernel_vm::{
-    page_table::{MmuMeta, VAddr, VmFlags, VmMeta, PPN, VPN},
     AddressSpace,
+    page_table::{MmuMeta, PPN, VAddr, VPN, VmFlags, VmMeta},
 };
 use tg_sbi;
 use tg_syscall::Caller;
@@ -276,8 +276,8 @@ fn kernel_space(layout: tg_linker::KernelLayout, memory: usize, portal: usize) {
         log::info!("{region}");
         use tg_linker::KernelRegionTitle::*;
         let flags = match region.title {
-            Text => "X_RV",       // 代码段：可执行、可读
-            Rodata => "__RV",     // 只读数据：可读
+            Text => "X_RV",        // 代码段：可执行、可读
+            Rodata => "__RV",      // 只读数据：可读
             Data | Boot => "_WRV", // 数据段：可写、可读
         };
         let s = VAddr::<Sv39>::new(region.range.start);
@@ -340,11 +340,11 @@ fn map_portal(space: &AddressSpace<Sv39, Sv39Manager>) {
 /// - `linkat`/`unlinkat`/`fstat`：硬链接相关（TODO 练习题）
 mod impls {
     use crate::{
-        build_flags,
-        fs::{read_all, FS},
+        PROCESSOR, Sv39, build_flags,
+        fs::{FS, read_all},
+        parse_flags,
         process::Process as ProcStruct,
         processor::ProcManager,
-        Sv39, PROCESSOR,
     };
     use alloc::vec::Vec;
     use alloc::{alloc::alloc_zeroed, string::String};
@@ -354,8 +354,8 @@ mod impls {
     use tg_easy_fs::UserBuffer;
     use tg_easy_fs::{FSManager, OpenFlags};
     use tg_kernel_vm::{
-        page_table::{MmuMeta, Pte, VAddr, VmFlags, PPN, VPN},
         PageManager,
+        page_table::{MmuMeta, PPN, Pte, VAddr, VPN, VmFlags},
     };
     use tg_syscall::*;
     use tg_task_manage::{PManager, ProcId};
@@ -586,29 +586,104 @@ mod impls {
             &self,
             _caller: Caller,
             _olddirfd: i32,
-            _oldpath: usize,
+            oldpath: usize,
             _newdirfd: i32,
-            _newpath: usize,
+            newpath: usize,
             _flags: u32,
         ) -> isize {
-            tg_console::log::info!("linkat: not implemented");
-            -1
+            let current = PROCESSOR.get_mut().current().unwrap();
+            let get_ptr = |path| current.address_space.translate(VAddr::new(path), READABLE);
+            let get_str = |ptr: NonNull<u8>| {
+                let mut string = String::new();
+                let mut raw_ptr: *mut u8 = ptr.as_ptr();
+                loop {
+                    unsafe {
+                        let ch = *raw_ptr;
+                        if ch == 0 {
+                            break;
+                        }
+                        string.push(ch as char);
+                        raw_ptr = (raw_ptr as usize + 1) as *mut u8;
+                    }
+                }
+
+                string
+            };
+
+            let (Some(old_ptr), Some(new_prt)) = (get_ptr(oldpath), get_ptr(newpath)) else {
+                return -1;
+            };
+            let (old_path, new_path) = (get_str(old_ptr), get_str(new_prt));
+            FS.link(&old_path, &new_path)
         }
 
         /// unlinkat 系统调用：删除硬链接
         ///
         /// TODO: 实现 unlinkat 系统调用（练习题）
-        fn unlinkat(&self, _caller: Caller, _dirfd: i32, _path: usize, _flags: u32) -> isize {
-            tg_console::log::info!("unlinkat: not implemented");
-            -1
+        fn unlinkat(&self, _caller: Caller, _dirfd: i32, path: usize, _flags: u32) -> isize {
+            let current = PROCESSOR.get_mut().current().unwrap();
+            let get_ptr = |path| current.address_space.translate(VAddr::new(path), READABLE);
+            let get_str = |ptr: NonNull<u8>| {
+                let mut string = String::new();
+                let mut raw_ptr: *mut u8 = ptr.as_ptr();
+                loop {
+                    unsafe {
+                        let ch = *raw_ptr;
+                        if ch == 0 {
+                            break;
+                        }
+                        string.push(ch as char);
+                        raw_ptr = (raw_ptr as usize + 1) as *mut u8;
+                    }
+                }
+
+                string
+            };
+
+            let Some(old_ptr) = get_ptr(path) else {
+                return -1;
+            };
+            let path = get_str(old_ptr);
+            FS.unlink(&path)
         }
 
         /// fstat 系统调用：获取文件状态
         ///
         /// TODO: 实现 fstat 系统调用（练习题）
-        fn fstat(&self, _caller: Caller, _fd: usize, _st: usize) -> isize {
-            tg_console::log::info!("fstat: not implemented");
-            -1
+        fn fstat(&self, _caller: Caller, fd: usize, st: usize) -> isize {
+            const WRITABLE: VmFlags<Sv39> = build_flags("W_V");
+            let current = PROCESSOR.get_mut().current().unwrap();
+
+            if fd >= current.fd_table.len() || current.fd_table[fd].is_none() {
+                return -1;
+            }
+
+            let fh = current.fd_table[fd].as_ref().unwrap().lock();
+            let Some(inode) = &fh.inode else {
+                return -1;
+            };
+
+            let Some(mut ptr) = current
+                .address_space
+                .translate::<Stat>(VAddr::new(st), WRITABLE)
+            else {
+                return -1;
+            };
+
+            let mut stat = Stat::new();
+
+            stat.ino = inode.get_inode_id() as u64;
+            stat.nlink = inode.get_link_num();
+            stat.mode = if inode.is_dir() {
+                StatMode::DIR
+            } else {
+                StatMode::FILE
+            };
+
+            unsafe {
+                *ptr.as_mut() = stat;
+            }
+            0
         }
     }
 
@@ -693,14 +768,56 @@ mod impls {
             current.pid.get_usize() as _
         }
 
-        /// spawn 系统调用（TODO 练习题）
-        fn spawn(&self, _caller: Caller, _path: usize, _count: usize) -> isize {
+        fn spawn(&self, _caller: Caller, path: usize, count: usize) -> isize {
+            const READABLE: VmFlags<Sv39> = build_flags("RV");
             let current = PROCESSOR.get_mut().current().unwrap();
-            tg_console::log::info!(
-                "spawn: parent pid = {}, not implemented",
-                current.pid.get_usize()
-            );
-            -1
+            current
+                .address_space
+                .translate::<u8>(VAddr::new(path), READABLE)
+                .map(|ptr| unsafe {
+                    core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr.as_ptr(), count))
+                })
+                .and_then(|name| FS.open(name, OpenFlags::RDONLY))
+                .map_or_else(
+                    || {
+                        log::error!("unknown app, select one in the list: ");
+                        // 列出文件系统中所有可用程序
+                        FS.readdir("")
+                            .unwrap()
+                            .into_iter()
+                            .for_each(|app| println!("{app}"));
+                        println!();
+                        -1
+                    },
+                    |fd| {
+                        let elf_data = read_all(fd);
+                        let data = ElfFile::new(elf_data.as_slice()).unwrap();
+                        let processor: *mut PManager<ProcStruct, ProcManager> =
+                            PROCESSOR.get_mut() as *mut _;
+
+                        let current = unsafe { (*processor).current().unwrap() };
+
+                        let parent_pid = current.pid; // 保存父进程 PID
+
+                        let child_proc = crate::Process::from_elf(data);
+
+                        if child_proc.is_none() {
+                            return -1;
+                        }
+
+                        let mut child_proc = child_proc.unwrap();
+
+                        let pid = child_proc.pid;
+
+                        let context = &mut child_proc.context.context;
+                        // 子进程的 a0 寄存器设为 0（fork 的返回值）
+                        *context.a_mut(0) = pid.get_usize();
+                        // 将子进程加入进程管理器，父进程 PID 用于维护进程树
+                        unsafe { (*processor).add(pid, child_proc, parent_pid) };
+                        // 父进程返回子进程 PID
+                        pid.get_usize() as isize
+                    },
+                )
         }
 
         /// sbrk 系统调用：调整堆大小
@@ -724,12 +841,13 @@ mod impls {
         /// set_priority 系统调用（TODO 练习题）
         fn set_priority(&self, _caller: Caller, prio: isize) -> isize {
             let current = PROCESSOR.get_mut().current().unwrap();
-            tg_console::log::info!(
-                "set_priority: pid = {}, prio = {}, not implemented",
-                current.pid.get_usize(),
+
+            if prio >= 2 {
+                current.stride.priority = prio as usize;
                 prio
-            );
-            -1
+            } else {
+                -1
+            }
         }
     }
 
@@ -763,9 +881,7 @@ mod impls {
         }
     }
 
-    /// 内存管理系统调用实现
     impl Memory for SyscallContext {
-        /// mmap 系统调用（TODO 练习题）
         fn mmap(
             &self,
             _caller: Caller,
@@ -776,16 +892,71 @@ mod impls {
             _fd: i32,
             _offset: usize,
         ) -> isize {
-            tg_console::log::info!(
-                "mmap: addr = {addr:#x}, len = {len}, prot = {prot}, not implemented"
+            if (addr.trailing_zeros() as usize) < Sv39::PAGE_BITS {
+                log::error!("addr not aligned");
+                return -1;
+            }
+
+            if prot >> 3 != 0 || prot == 0 {
+                log::error!("prot not valied");
+                return -1;
+            }
+
+            let addres_space = &mut PROCESSOR.get_mut().current().unwrap().address_space;
+
+            let start_va = VAddr::<Sv39>::new(addr);
+            let end_va = VAddr::<Sv39>::new(addr + len);
+            let mut flags: [u8; 5] = *b"U___V";
+
+            if prot & 1 == 1 {
+                flags[3] = b'R';
+            }
+            if (prot >> 1) & 1 == 1 {
+                flags[2] = b'W';
+            }
+            if (prot >> 2) & 1 == 1 {
+                flags[1] = b'X';
+            }
+            log::info!(
+                "prot is {}, addr is {addr:#X}",
+                core::str::from_utf8(&flags).unwrap()
             );
-            -1
+
+            let range = start_va.floor()..end_va.ceil();
+            if addres_space.have_mapped(&range) {
+                -1
+            } else {
+                addres_space.map_anonymous(
+                    range,
+                    parse_flags(unsafe { core::str::from_utf8_unchecked(&flags) }).unwrap(),
+                );
+                0
+            }
         }
 
-        /// munmap 系统调用（TODO 练习题）
         fn munmap(&self, _caller: Caller, addr: usize, len: usize) -> isize {
-            tg_console::log::info!("munmap: addr = {addr:#x}, len = {len}, not implemented");
-            -1
+            if (addr.trailing_zeros() as usize) < Sv39::PAGE_BITS {
+                log::error!("addr not aligned");
+                return -1;
+            }
+
+            let address_space = &mut PROCESSOR.get_mut().current().unwrap().address_space;
+
+            let start_va = VAddr::<Sv39>::new(addr);
+            let end_va = VAddr::<Sv39>::new(addr + len);
+
+            let range = start_va.floor()..end_va.ceil();
+
+            let per_range = |x| VPN::<Sv39>::new(x)..VPN::<Sv39>::new(x + 1);
+
+            if (start_va.floor().val()..end_va.ceil().val())
+                .all(|x| address_space.have_mapped(&per_range(x)))
+            {
+                address_space.unmap(range);
+                0
+            } else {
+                -1
+            }
         }
     }
 }
